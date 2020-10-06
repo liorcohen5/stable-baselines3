@@ -138,5 +138,7 @@ def get_action_dim(action_space: spaces.Space) -> int:
     elif isinstance(action_space, spaces.MultiBinary):
         # Number of binary actions
         return int(action_space.n)
+    elif isinstance(action_space, spaces.Tuple):
+        return sum([get_action_dim(sub_space) for sub_space in action_space])
     else:
         raise NotImplementedError()
