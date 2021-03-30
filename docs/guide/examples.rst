@@ -643,6 +643,246 @@ A2C policy gradient updates on the model.
 
 
 
+Hindsight Experience Replay (HER)
+---------------------------------
+
+For this example, we are using `Highway-Env <https://github.com/eleurent/highway-env>`_ by `@eleurent <https://github.com/eleurent>`_.
+
+
+.. image:: ../_static/img/colab-badge.svg
+   :target: https://colab.research.google.com/github/Stable-Baselines-Team/rl-colab-notebooks/blob/sb3/stable_baselines_her.ipynb
+
+
+.. figure:: https://raw.githubusercontent.com/eleurent/highway-env/gh-media/docs/media/parking-env.gif
+
+   The highway-parking-v0 environment.
+
+The parking env is a goal-conditioned continuous control task, in which the vehicle must park in a given space with the appropriate heading.
+
+.. note::
+
+  The hyperparameters in the following example were optimized for that environment.
+
+
+.. code-block:: python
+
+  import gym
+  import highway_env
+  import numpy as np
+
+  from stable_baselines3 import HER, SAC, DDPG, TD3
+  from stable_baselines3.common.noise import NormalActionNoise
+
+  env = gym.make("parking-v0")
+
+  # Create 4 artificial transitions per real transition
+  n_sampled_goal = 4
+
+  # SAC hyperparams:
+  model = HER(
+      "MlpPolicy",
+      env,
+      SAC,
+      n_sampled_goal=n_sampled_goal,
+      goal_selection_strategy="future",
+      # IMPORTANT: because the env is not wrapped with a TimeLimit wrapper
+      # we have to manually specify the max number of steps per episode
+      max_episode_length=100,
+      verbose=1,
+      buffer_size=int(1e6),
+      learning_rate=1e-3,
+      gamma=0.95,
+      batch_size=256,
+      online_sampling=True,
+      policy_kwargs=dict(net_arch=[256, 256, 256]),
+  )
+
+  model.learn(int(2e5))
+  model.save("her_sac_highway")
+
+  # Load saved model
+  model = HER.load("her_sac_highway", env=env)
+
+  obs = env.reset()
+
+  # Evaluate the agent
+  episode_reward = 0
+  for _ in range(100):
+      action, _ = model.predict(obs, deterministic=True)
+      obs, reward, done, info = env.step(action)
+      env.render()
+      episode_reward += reward
+      if done or info.get("is_success", False):
+          print("Reward:", episode_reward, "Success?", info.get("is_success", False))
+          episode_reward = 0.0
+          obs = env.reset()
+
+
+Advanced Saving and Loading
+---------------------------------
+
+In this example, we show how to use some advanced features of Stable-Baselines3 (SB3):
+how to easily create a test environment to evaluate an agent periodically,
+use a policy independently from a model (and how to save it, load it) and save/load a replay buffer.
+
+By default, the replay buffer is not saved when calling ``model.save()``, in order to save space on the disk (a replay buffer can be up to several GB when using images).
+However, SB3 provides a ``save_replay_buffer()`` and ``load_replay_buffer()`` method to save it separately.
+
+
+.. image:: ../_static/img/colab-badge.svg
+   :target: https://colab.research.google.com/github/Stable-Baselines-Team/rl-colab-notebooks/blob/sb3/advanced_saving_loading.ipynb
+
+Stable-Baselines3 automatic creation of an environment for evaluation.
+For that, you only need to specify ``create_eval_env=True`` when passing the Gym ID of the environment while creating the agent.
+Behind the scene, SB3 uses an :ref:`EvalCallback <callbacks>`.
+
+.. code-block:: python
+
+  from stable_baselines3 import SAC
+  from stable_baselines3.common.evaluation import evaluate_policy
+  from stable_baselines3.sac.policies import MlpPolicy
+
+  # Create the model, the training environment
+  # and the test environment (for evaluation)
+  model = SAC('MlpPolicy', 'Pendulum-v0', verbose=1,
+              learning_rate=1e-3, create_eval_env=True)
+
+  # Evaluate the model every 1000 steps on 5 test episodes
+  # and save the evaluation to the "logs/" folder
+  model.learn(6000, eval_freq=1000, n_eval_episodes=5, eval_log_path="./logs/")
+
+  # save the model
+  model.save("sac_pendulum")
+
+  # the saved model does not contain the replay buffer
+  loaded_model = SAC.load("sac_pendulum")
+  print(f"The loaded_model has {loaded_model.replay_buffer.size()} transitions in its buffer")
+
+  # now save the replay buffer too
+  model.save_replay_buffer("sac_replay_buffer")
+
+  # load it into the loaded_model
+  loaded_model.load_replay_buffer("sac_replay_buffer")
+
+  # now the loaded replay is not empty anymore
+  print(f"The loaded_model has {loaded_model.replay_buffer.size()} transitions in its buffer")
+
+  # Save the policy independently from the model
+  # Note: if you don't save the complete model with `model.save()`
+  # you cannot continue training afterward
+  policy = model.policy
+  policy.save("sac_policy_pendulum.pkl")
+
+  # Retrieve the environment
+  env = model.get_env()
+
+  # Evaluate the policy
+  mean_reward, std_reward = evaluate_policy(policy, env, n_eval_episodes=10, deterministic=True)
+
+  print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")
+
+  # Load the policy independently from the model
+  saved_policy = MlpPolicy.load("sac_policy_pendulum")
+
+  # Evaluate the loaded policy
+  mean_reward, std_reward = evaluate_policy(saved_policy, env, n_eval_episodes=10, deterministic=True)
+
+  print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")
+
+
+
+Accessing and modifying model parameters
+----------------------------------------
+
+You can access model's parameters via ``load_parameters`` and ``get_parameters`` functions,
+or via ``model.policy.state_dict()`` (and ``load_state_dict()``),
+which use dictionaries that map variable names to PyTorch tensors.
+
+These functions are useful when you need to e.g. evaluate large set of models with same network structure,
+visualize different layers of the network or modify parameters manually.
+
+Policies also offers a simple way to save/load weights as a NumPy vector, using ``parameters_to_vector()``
+and ``load_from_vector()`` method.
+
+Following example demonstrates reading parameters, modifying some of them and loading them to model
+by implementing `evolution strategy (es) <http://blog.otoro.net/2017/10/29/visual-evolution-strategies/>`_
+for solving the ``CartPole-v1`` environment. The initial guess for parameters is obtained by running
+A2C policy gradient updates on the model.
+
+.. code-block:: python
+
+  from typing import Dict
+
+  import gym
+  import numpy as np
+  import torch as th
+
+  from stable_baselines3 import A2C
+  from stable_baselines3.common.evaluation import evaluate_policy
+
+
+  def mutate(params: Dict[str, th.Tensor]) -> Dict[str, th.Tensor]:
+      """Mutate parameters by adding normal noise to them"""
+      return dict((name, param + th.randn_like(param)) for name, param in params.items())
+
+
+  # Create policy with a small network
+  model = A2C(
+      "MlpPolicy",
+      "CartPole-v1",
+      ent_coef=0.0,
+      policy_kwargs={"net_arch": [32]},
+      seed=0,
+      learning_rate=0.05,
+  )
+
+  # Use traditional actor-critic policy gradient updates to
+  # find good initial parameters
+  model.learn(total_timesteps=10000)
+
+  # Include only variables with "policy", "action" (policy) or "shared_net" (shared layers)
+  # in their name: only these ones affect the action.
+  # NOTE: you can retrieve those parameters using model.get_parameters() too
+  mean_params = dict(
+      (key, value)
+      for key, value in model.policy.state_dict().items()
+      if ("policy" in key or "shared_net" in key or "action" in key)
+  )
+
+  # population size of 50 invdiduals
+  pop_size = 50
+  # Keep top 10%
+  n_elite = pop_size // 10
+  # Retrieve the environment
+  env = model.get_env()
+
+  for iteration in range(10):
+      # Create population of candidates and evaluate them
+      population = []
+      for population_i in range(pop_size):
+          candidate = mutate(mean_params)
+          # Load new policy parameters to agent.
+          # Tell function that it should only update parameters
+          # we give it (policy parameters)
+          model.policy.load_state_dict(candidate, strict=False)
+          # Evaluate the candidate
+          fitness, _ = evaluate_policy(model, env)
+          population.append((candidate, fitness))
+      # Take top 10% and use average over their parameters as next mean parameter
+      top_candidates = sorted(population, key=lambda x: x[1], reverse=True)[:n_elite]
+      mean_params = dict(
+          (
+              name,
+              th.stack([candidate[0][name] for candidate in top_candidates]).mean(dim=0),
+          )
+          for name in mean_params.keys()
+      )
+      mean_fitness = sum(top_candidate[1] for top_candidate in top_candidates) / n_elite
+      print(f"Iteration {iteration + 1:<3} Mean top fitness: {mean_fitness:.2f}")
+      print(f"Best fitness: {top_candidates[0][1]:.2f}")
+
+
+
 Record a Video
 --------------
 
